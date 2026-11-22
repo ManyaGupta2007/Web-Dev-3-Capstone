@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShopHub – E-Commerce & Inventory</title>
+<style>
+:root{--bg:#f6f7f9;--cd:#fff;--tx:#1b1f24;--mu:#6b7280;--pr:#2563eb;--bd:#e5e7eb;--dg:#dc2626;--ok:#16a34a}
+@media(prefers-color-scheme:dark){:root{--bg:#111418;--cd:#1b2027;--tx:#e8eaed;--mu:#9aa3af;--bd:#2d343d}}
+*{box-sizing:border-box}body{margin:0;font:15px system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:var(--cd);border-bottom:1px solid var(--bd)}
+nav b{margin-right:auto;font-size:18px}nav a{padding:6px 10px;border-radius:6px;color:var(--tx);text-decoration:none}nav a:hover,nav a.on{background:var(--bd)}
+main{max-width:1000px;margin:20px auto;padding:0 16px}
+.card{background:var(--cd);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+input,select,textarea{padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit;max-width:100%}
+button{padding:7px 12px;border:0;border-radius:6px;background:var(--pr);color:#fff;cursor:pointer;font:inherit}
+button.g{background:var(--bd);color:var(--tx)}button.d{background:var(--dg)}button.o{background:var(--ok)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}.mu{color:var(--mu);font-size:13px}.pr{font-size:18px;font-weight:600}
+table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left}th{color:var(--mu);font-weight:500}
+.tag{padding:2px 8px;border-radius:99px;font-size:12px;background:var(--bd)}.low{background:#fde68a;color:#78350f}
+#toasts{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;gap:8px;z-index:9}
+.t{background:var(--tx);color:var(--bg);padding:10px 14px;border-radius:8px;max-width:300px}.t.e{background:var(--dg);color:#fff}
+.ov{overflow-x:auto}
+</style></head><body>
+<nav id="nav"></nav><main id="app"></main><div id="toasts"></div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const inr=n=>'₹'+Number(n).toLocaleString('en-IN');
+const S={user:JSON.parse(localStorage.u||'null'),at:localStorage.at||'',rt:localStorage.rt||'',sock:null,q:'',cat:'',page:1,mode:'login'};
+const TR={pending:['confirmed','cancelled'],confirmed:['shipped','cancelled'],shipped:['delivered']};
+
+function toast(m,e){const d=document.createElement('div');d.className='t'+(e?' e':'');d.textContent=m;$('#toasts').append(d);setTimeout(()=>d.remove(),5000)}
+function setAuth(d){S.at=localStorage.at=d.accessToken;S.rt=localStorage.rt=d.refreshToken;if(d.user){S.user=d.user;localStorage.u=JSON.stringify(d.user)}}
+function logout(){S.user=null;S.at=S.rt='';localStorage.clear();S.sock&&S.sock.disconnect();S.sock=null;location.hash='#/login'}
+
+async function api(p,o={},retry=true){
+  const h={'Content-Type':'application/json'};if(S.at)h.Authorization='Bearer '+S.at;
+  const r=await fetch('/api'+p,{method:o.method||'GET',headers:h,body:o.body?JSON.stringify(o.body):undefined});
+  const j=await r.json();
+  if(r.status===401&&retry&&S.rt&&!p.startsWith('/auth/')){          // access token expired -> use refresh token
+    const rr=await fetch('/api/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshToken:S.rt})});
+    if(rr.ok){setAuth((await rr.json()).data);return api(p,o,false)}
+    logout();throw new Error('Session expired, please log in again');
+  }
+  if(!j.success)throw new Error(j.message);return j;
+}
+
+function connectSocket(){                                           // real-time notifications (JWT-authenticated)
+  if(S.sock||!S.at)return;S.sock=io({auth:{token:S.at}});
+  S.sock.on('order:placed',d=>toast('Order placed: '+inr(d.total)));
+  S.sock.on('order:new',d=>toast('New order received ('+d.items.length+' item types)'));
+  S.sock.on('order:status',d=>{toast('Order is now '+d.orderId.slice(-6)+': '+d.status);if(location.hash==='#/orders')render()});
+  S.sock.on('stock:low',d=>toast('Low stock: '+d.name+' ('+d.stock+' left)',true));
+}
+
+const role=()=>S.user&&S.user.role;
+function nav(){
+  const l=[['#/','Shop']];
+  if(role()==='customer')l.push(['#/cart','Cart'],['#/wishlist','Wishlist']);
+  if(S.user)l.push(['#/orders','Orders']);
+  if(role()==='seller'||role()==='admin')l.push(['#/my-products',role()==='admin'?'Products':'My Products'],['#/reports','Reports']);
+  if(role()==='admin')l.push(['#/categories','Categories'],['#/coupons','Coupons']);
+  $('#nav').innerHTML='<b>🛒 ShopHub</b>'+l.map(([h,t])=>`<a href="${h}" class="${(location.hash||'#/')===h?'on':''}">${t}</a>`).join('')+
+   (S.user?`<span class="mu">${esc(S.user.name)} <span class="tag">${S.user.role}</span></span><button class="g" data-a="logout">Logout</button>`:'<a href="#/login">Login</a>');
+}
+
+const tbl=r=>!r.length?'<p class="mu">No data yet.</p>':`<div class="ov"><table><tr>${Object.keys(r[0]).map(k=>`<th>${esc(k)}</th>`).join('')}</tr>${r.map(x=>`<tr>${Object.values(x).map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table></div>`;
+
+const V={
+ async login(){
+  const reg=S.mode==='register';
+  return `<div class="card" style="max-width:380px;margin:auto"><h2>${reg?'Create account':'Login'}</h2>
+  <form data-f="auth">${reg?'<div class="row"><input name="name" placeholder="Name" required></div>':''}
+  <div class="row"><input name="email" type="email" placeholder="Email" required></div>
+  <div class="row"><input name="password" type="password" placeholder="Password (min 6)" required></div>
+  ${reg?'<div class="row"><select name="role"><option value="customer">Customer</option><option value="seller">Seller</option></select></div>':''}
+  <div class="row"><button>${reg?'Register':'Login'}</button><button type="button" class="g" data-a="mode">${reg?'Have an account?':'New here? Register'}</button></div></form>
+  <p class="mu">Demo: customer@shop.com / customer123<br>seller@shop.com / seller123 · admin@shop.com / admin123</p></div>`;
+ },
+ async shop(){
+  const cats=(await api('/categories')).data;
+  const p=await api(`/products?page=${S.page}&limit=8${S.q?'&q='+encodeURIComponent(S.q):''}${S.cat?'&category='+S.cat:''}`);
+  return `<div class="row"><input id="q" placeholder="Search products…" value="${esc(S.q)}"><select id="cat"><option value="">All categories</option>${cats.map(c=>`<option value="${c._id}" ${S.cat===c._id?'selected':''}>${esc(c.name)}</option>`).join('')}</select><button data-a="search">Search</button></div>
+  <div class="grid">${p.data.map(x=>`<div class="card"><b>${esc(x.name)}</b><div class="mu">${esc(x.category?.name)} · by ${esc(x.seller?.name)}</div><p class="mu">${esc(x.description)}</p>
+   <div class="pr">${inr(x.price)} ${role()==='customer'?`<button class="g" data-a="wish" data-id="${x._id}">♡</button>`:''}</div><div class="mu">${x.ratingCount?'★ '+x.ratingAvg.toFixed(1)+' ('+x.ratingCount+' reviews)':'No reviews yet'}</div><div class="mu">${x.stock>0?(x.stock<=x.lowStockThreshold?`<span class="tag low">Only ${x.stock} left</span>`:x.stock+' in stock'):'<span class="tag">Out of stock</span>'}</div>
+   ${role()==='customer'&&x.stock>0?`<div class="row"><button data-a="add" data-id="${x._id}">Add to cart</button></div>`:''}</div>`).join('')||'<p class="mu">No products found.</p>'}</div>
+  <div class="row"><button class="g" data-a="pg" data-d="-1" ${S.page<=1?'disabled':''}>← Prev</button><span class="mu">Page ${p.page} of ${p.pages||1}</span><button class="g" data-a="pg" data-d="1" ${S.page>=p.pages?'disabled':''}>Next →</button></div>`;
+ },
+ async cart(){
+  const c=(await api('/cart')).data;
+  if(!c.items.length)return '<div class="card">Your cart is empty.</div>';
+  return `<div class="card ov"><table><tr><th>Product</th><th>Price</th><th>Qty</th><th>Total</th><th></th></tr>${c.items.map(i=>`<tr><td>${esc(i.name)}${i.inStock?'':' <span class="tag low">insufficient stock</span>'}</td><td>${inr(i.price)}</td>
+   <td><input type="number" min="1" value="${i.quantity}" style="width:70px" data-a="qty" data-id="${i.productId}"></td><td>${inr(i.lineTotal)}</td><td><button class="d" data-a="rm" data-id="${i.productId}">✕</button></td></tr>`).join('')}</table>
+   <p class="pr">Total: ${inr(c.totalAmount)}</p></div>
+  <form class="card" data-f="order"><b>Shipping address</b> <span class="mu">(payment is simulated)</span><div class="row"><input name="line1" placeholder="Address" required><input name="city" placeholder="City" required><input name="postalCode" placeholder="Postal code" required><input name="couponCode" placeholder="Coupon code (optional)"></div><button class="o">Place order</button></form>`;
+ },
+ async orders(){
+  const o=(await api('/orders?limit=20')).data;
+  return o.map(x=>`<div class="card"><div class="row"><b>#${x._id.slice(-6)}</b><span class="tag">${x.status}</span><span class="mu">${new Date(x.createdAt).toLocaleString()}</span><span class="pr" style="margin-left:auto">${inr(x.totalAmount)}</span></div>
+   <div class="mu">${x.items.map(i=>`${esc(i.name)} × ${i.quantity}`).join(', ')}</div>${x.couponCode?`<div class="mu">Coupon ${esc(x.couponCode)}: −${inr(x.discount)}</div>`:''}${x.status==='delivered'&&role()==='customer'?`<div class="row">${x.items.map(i=>`<button class="g" data-a="review" data-id="${i.product}">★ Review ${esc(i.name)}</button>`).join('')}</div>`:''}<div class="mu">Ship to: ${esc(x.shippingAddress.line1)}, ${esc(x.shippingAddress.city)} · Payment: ${x.payment.status}</div>
+   <div class="row">${role()==='customer'?(TR[x.status]?.includes('cancelled')?`<button class="d" data-a="cancel" data-id="${x._id}">Cancel order</button>`:''):(TR[x.status]||[]).map(s=>`<button class="${s==='cancelled'?'d':'g'}" data-a="status" data-id="${x._id}" data-s="${s}">Mark ${s}</button>`).join('')}</div></div>`).join('')||'<div class="card">No orders yet.</div>';
+ },
+ async myproducts(){
+  const cats=(await api('/categories')).data;
+  const list=role()==='admin'?(await api('/products?limit=50')).data:(await api('/products/mine')).data;
+  return `<form class="card" data-f="product"><b>Add product</b><div class="row"><input name="name" placeholder="Name" required><input name="price" type="number" min="0" placeholder="Price" required><input name="stock" type="number" min="0" placeholder="Stock" required>
+   <select name="category" required><option value="">Category</option>${cats.map(c=>`<option value="${c._id}">${esc(c.name)}</option>`).join('')}</select></div><div class="row"><input name="description" placeholder="Description" style="flex:1"><button>Add</button></div></form>
+  <div class="card ov"><table><tr><th>Name</th><th>Price</th><th>Stock</th><th></th></tr>${list.map(p=>`<tr><td>${esc(p.name)}</td><td>${inr(p.price)}</td><td>${p.stock<=p.lowStockThreshold?`<span class="tag low">${p.stock}</span>`:p.stock}</td>
+   <td><button class="g" data-a="edit" data-id="${p._id}" data-p="${p.price}" data-s="${p.stock}">Edit</button> <button class="d" data-a="delp" data-id="${p._id}">Delete</button></td></tr>`).join('')}</table></div>`;
+ },
+ async wishlist(){
+  const w=(await api('/wishlist')).data;
+  return w.length?`<div class="grid">${w.map(x=>`<div class="card"><b>${esc(x.name)}</b><div class="pr">${inr(x.price)}</div><div class="row"><button data-a="add" data-id="${x._id}">Add to cart</button><button class="d" data-a="unwish" data-id="${x._id}">Remove</button></div></div>`).join('')}</div>`:'<div class="card">Your wishlist is empty.</div>';
+ },
+ async coupons(){
+  const c=(await api('/coupons')).data;
+  return `<form class="card" data-f="coupon"><b>New coupon</b><div class="row"><input name="code" placeholder="CODE" required><input name="discountPercent" type="number" min="1" max="90" placeholder="% off" required><input name="minOrder" type="number" min="0" placeholder="Min order"><input name="maxUses" type="number" min="1" placeholder="Max uses"><input name="expiresAt" type="date" required><button>Add</button></div></form>
+  <div class="card ov"><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Used</th><th>Expires</th><th></th></tr>${c.map(x=>`<tr><td>${esc(x.code)}</td><td>${x.discountPercent}%</td><td>${inr(x.minOrder)}</td><td>${x.usedCount}/${x.maxUses}</td><td>${new Date(x.expiresAt).toLocaleDateString()}</td><td><button class="d" data-a="delcoup" data-id="${x._id}">Delete</button></td></tr>`).join('')}</table></div>`;
+ },
+ async categories(){
+  const c=(await api('/categories')).data;
+  return `<form class="card" data-f="cat"><div class="row"><input name="name" placeholder="New category" required><input name="description" placeholder="Description"><button>Add</button></div></form>
+  <div class="card">${c.map(x=>`<div class="row"><b>${esc(x.name)}</b><span class="mu">${esc(x.description)}</span><button class="d" data-a="delc" data-id="${x._id}" style="margin-left:auto">Delete</button></div>`).join('')}</div>`;
+ },
+ async reports(){
+  const [s,b,i,l]=await Promise.all(['sales','best-sellers','inventory','low-stock'].map(r=>api('/reports/'+r)));
+  return `<div class="card"><h3>Daily sales</h3>${tbl(s.data)}</div><div class="card"><h3>Best sellers</h3>${tbl(b.data.map(({_id,...r})=>r))}</div>
+  <div class="card"><h3>Inventory by category</h3>${tbl(i.data)}</div><div class="card"><h3>Low stock</h3>${tbl(l.data.map(x=>({name:x.name,stock:x.stock,threshold:x.lowStockThreshold})))}</div>`;
+ }
+};
+const ROUTES={'#/':'shop','#/login':'login','#/cart':'cart','#/orders':'orders','#/my-products':'myproducts','#/categories':'categories','#/wishlist':'wishlist','#/coupons':'coupons','#/reports':'reports'};
+const NEED={cart:['customer'],orders:['customer','seller','admin'],myproducts:['seller','admin'],categories:['admin'],coupons:['admin'],wishlist:['customer'],reports:['seller','admin']};
+
+async function render(){
+  const h=location.hash||'#/',v=ROUTES[h]||'shop';nav();
+  if(NEED[v]&&!(S.user&&NEED[v].includes(role()))){location.hash='#/login';return}
+  try{$('#app').innerHTML=await V[v]()}catch(e){$('#app').innerHTML=`<div class="card">⚠️ ${esc(e.message)}</div>`}
+}
+
+const A={ // click / change actions
+ wish:async d=>{await api('/wishlist/'+d.id,{method:'POST'});toast('Added to wishlist')},
+ unwish:async d=>{await api('/wishlist/'+d.id,{method:'DELETE'});render()},
+ review:async d=>{const r=prompt('Rating (1-5)');if(!r)return;await api(`/products/${d.id}/reviews`,{method:'POST',body:{rating:+r,comment:prompt('Comment (optional)')||''}});toast('Thanks for your review!')},
+ delcoup:async d=>{await api('/coupons/'+d.id,{method:'DELETE'});render()},
+ logout:()=>api('/auth/logout',{method:'POST'}).catch(()=>{}).then(logout),
+ mode:()=>{S.mode=S.mode==='login'?'register':'login';render()},
+ search:()=>{S.q=$('#q').value;S.cat=$('#cat').value;S.page=1;render()},
+ pg:d=>{S.page+=+d.d;render()},
+ add:async d=>{if(!S.user){location.hash='#/login';return}await api('/cart/items',{method:'POST',body:{productId:d.id,quantity:1}});toast('Added to cart')},
+ qty:async(d,el)=>{await api('/cart/items/'+d.id,{method:'PATCH',body:{quantity:+el.value}});render()},
+ rm:async d=>{await api('/cart/items/'+d.id,{method:'DELETE'});render()},
+ cancel:async d=>{await api(`/orders/${d.id}/cancel`,{method:'POST'});render()},
+ status:async d=>{await api(`/orders/${d.id}/status`,{method:'PATCH',body:{status:d.s}});render()},
+ edit:async d=>{const p=prompt('New price',d.p),s=p!==null&&prompt('New stock',d.s);if(s===null||s===false)return;await api('/products/'+d.id,{method:'PATCH',body:{price:+p,stock:+s}});render()},
+ delp:async d=>{if(confirm('Delete product?')){await api('/products/'+d.id,{method:'DELETE'});render()}},
+ delc:async d=>{if(confirm('Delete category?')){await api('/categories/'+d.id,{method:'DELETE'});render()}}
+};
+const F={ // form submits
+ coupon:async f=>{const b=Object.fromEntries(new FormData(f));b.discountPercent=+b.discountPercent;b.minOrder=+b.minOrder||0;b.maxUses=+b.maxUses||100;await api('/coupons',{method:'POST',body:b});render()},
+ auth:async f=>{const b=Object.fromEntries(new FormData(f));const r=await api('/auth/'+S.mode,{method:'POST',body:b});setAuth(r.data);connectSocket();location.hash=role()==='customer'?'#/':'#/my-products';if(role()==='customer')render()},
+ order:async f=>{const {couponCode,...b}=Object.fromEntries(new FormData(f));await api('/orders',{method:'POST',body:{shippingAddress:b,couponCode}});toast('Order placed!');location.hash='#/orders'},
+ product:async f=>{const b=Object.fromEntries(new FormData(f));b.price=+b.price;b.stock=+b.stock;await api('/products',{method:'POST',body:b});toast('Product added');render()},
+ cat:async f=>{await api('/categories',{method:'POST',body:Object.fromEntries(new FormData(f))});render()}
+};
+document.addEventListener('click',async e=>{const b=e.target.closest('button[data-a]');if(b)try{await A[b.dataset.a](b.dataset,b)}catch(x){toast(x.message,true)}});
+document.addEventListener('change',async e=>{const b=e.target.closest('input[data-a]');if(b)try{await A[b.dataset.a](b.dataset,b)}catch(x){toast(x.message,true)}});
+document.addEventListener('submit',async e=>{const f=e.target.closest('form[data-f]');if(!f)return;e.preventDefault();try{await F[f.dataset.f](f)}catch(x){toast(x.message,true)}});
+window.addEventListener('hashchange',render);connectSocket();render();
+</script></body></html>

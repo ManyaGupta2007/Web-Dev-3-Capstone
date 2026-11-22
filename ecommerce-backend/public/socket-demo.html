@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Socket.IO Demo</title>
+<style>body{font-family:system-ui;max-width:720px;margin:2rem auto;padding:0 1rem}input{width:100%;padding:.5rem;margin:.4rem 0}
+button{padding:.5rem 1rem}#log{background:#111;color:#0f0;padding:1rem;height:300px;overflow:auto;font-family:monospace;white-space:pre-wrap;margin-top:1rem}</style></head>
+<body>
+<h2>Real-time notifications demo</h2>
+<p>Login via <code>POST /api/auth/login</code> in Postman, paste the <b>accessToken</b> here, connect, then place an order / change its status / lower stock in Postman and watch events arrive.</p>
+<input id="token" placeholder="Paste accessToken here"><button onclick="connect()">Connect</button>
+<div id="log"></div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const log = (m) => { const l = document.getElementById('log'); l.textContent += m + '\n'; l.scrollTop = l.scrollHeight; };
+function connect() {
+  const socket = io({ auth: { token: document.getElementById('token').value.trim() } });
+  socket.on('connect_error', (e) => log('ERROR: ' + e.message));
+  ['connected', 'order:placed', 'order:new', 'order:status', 'stock:low'].forEach((ev) =>
+    socket.on(ev, (d) => log(ev + ' -> ' + JSON.stringify(d))));
+}
+</script></body></html>
